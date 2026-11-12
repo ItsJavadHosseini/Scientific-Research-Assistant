@@ -19,3 +19,4 @@ storage/qdrant/
 .DS_Store
 
 tests/
+data/
