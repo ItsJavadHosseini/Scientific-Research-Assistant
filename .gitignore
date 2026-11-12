@@ -20,3 +20,8 @@ storage/qdrant/
 
 tests/
 data/
+.env
+.env.*
+!.env.example
+
+cat .gitignore
