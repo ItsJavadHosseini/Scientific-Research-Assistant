@@ -312,9 +312,7 @@ Content:
                     f"\n[bold cyan]Completed Node:[/bold cyan] {node_name}"
                 )
 
-            result = self.graph.get_state(
-                initial_state
-            ).values
+            result = self.graph.invoke(initial_state)
         total_time = time.perf_counter() - total_start
 
         # Extract the final results.
