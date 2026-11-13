@@ -1,10 +1,27 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# Virtual environment
+.venv/
 
-# Virtual environments
-.venv
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local vector database
+storage/qdrant/
+
+# OS
+.DS_Store
+
+tests/
+data/
+.env
+.env.*
+!.env.example
+
+cat .gitignore
