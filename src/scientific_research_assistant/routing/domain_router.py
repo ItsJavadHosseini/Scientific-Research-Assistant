@@ -1,5 +1,8 @@
-from pydantic import BaseModel, Field
 from typing import Literal
+
+from pydantic import BaseModel, Field
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.exceptions import OutputParserException
 
 from scientific_research_assistant.generation.llm import get_llm
 
@@ -13,15 +16,11 @@ Domain = Literal[
 
 class RoutingDecision(BaseModel):
     domains: list[Domain] = Field(
-        description=(
-            "All research domains relevant to the user's question."
-        )
+        description="All research domains relevant to the user's question."
     )
 
     reasoning: str = Field(
-        description=(
-            "A brief explanation of why these domains were selected."
-        )
+        description="A brief explanation of why these domains were selected."
     )
 
 
@@ -30,14 +29,17 @@ class DomainRouter:
     def __init__(self):
         self.llm = get_llm(temperature=0.0)
 
-        self.router = self.llm.with_structured_output(
-            RoutingDecision
+        # Initialize a Pydantic parser for routing decisions.
+        self.parser = PydanticOutputParser(
+            pydantic_object=RoutingDecision
         )
 
     def route(self, question: str) -> RoutingDecision:
 
         if not question.strip():
             raise ValueError("Question cannot be empty.")
+
+        format_instructions = self.parser.get_format_instructions()
 
         prompt = f"""
 You are a domain classification system for a scientific
@@ -64,10 +66,42 @@ Rules:
 - Do not select a domain merely because it is indirectly related.
 - If the question is unrelated to all three domains,
   return an empty domains list.
-- Return a short explanation of your decision.
+- Provide a short explanation.
+- Return only valid JSON.
+- Do not include Markdown code fences.
+
+{format_instructions}
 
 User question:
 {question}
 """
 
-        return self.router.invoke(prompt)
+        # Generate the routing decision.
+        response = self.llm.invoke(prompt)
+
+        # Extract text from the model response.
+        content = response.content
+
+        if isinstance(content, list):
+            content = "".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict)
+                and block.get("type") == "text"
+            )
+
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(
+                "Domain router received an empty response from the LLM."
+            )
+
+        # Parse and validate the JSON response.
+        try:
+            decision = self.parser.parse(content)
+
+        except OutputParserException as exc:
+            raise ValueError(
+                f"Invalid routing response from LLM: {content}"
+            ) from exc
+
+        return decision

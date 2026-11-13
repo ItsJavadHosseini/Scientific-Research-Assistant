@@ -1,4 +1,3 @@
-
 import time
 from collections import defaultdict
 
@@ -38,13 +37,23 @@ class RAGChain:
             self.domain_router = DomainRouter()
             self.llm = get_llm()
 
-        self._log("[bold green]RAG components initialized successfully.")
+        # Build the LangGraph workflow.
+        from scientific_research_assistant.graph.workflow import (
+            build_rag_graph,
+        )
+
+        self.graph = build_rag_graph(self)
+
+        self._log(
+            "[bold green]RAG components initialized successfully."
+        )
 
     # --------------------------------------------------
     # Logging
     # --------------------------------------------------
 
     def _log(self, message: str):
+
         if self.verbose:
             console.print(message)
 
@@ -121,7 +130,11 @@ Content:
     # Streaming Generation
     # --------------------------------------------------
 
-    def _generate_streaming_answer(self, context: str, question: str):
+    def _generate_streaming_answer(
+        self,
+        context: str,
+        question: str,
+    ):
 
         messages = RAG_PROMPT.format_messages(
             context=context,
@@ -178,6 +191,46 @@ Content:
 
         answer = "".join(answer_parts)
 
+        # Retry with non-streaming generation if streaming fails.
+        if not answer.strip():
+
+            console.print(
+                "[yellow]Streaming returned an empty response. "
+                "Retrying with non-streaming generation...[/yellow]"
+            )
+
+            response = self.llm.invoke(messages)
+
+            content = response.content
+
+            if isinstance(content, str):
+
+                answer = content
+
+            elif isinstance(content, list):
+
+                answer = "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "text"
+                )
+
+            if not answer.strip():
+
+                raise RuntimeError(
+                    "LLM returned an empty response in both "
+                    "streaming and non-streaming modes."
+                )
+
+            console.print(
+                Panel(
+                    Markdown(answer),
+                    title="Generated Answer (Fallback)",
+                    border_style="yellow",
+                )
+            )
+
         generation_time = (
             time.perf_counter() - generation_start
         )
@@ -211,7 +264,7 @@ Content:
         console.print(table)
 
     # --------------------------------------------------
-    # Main RAG Pipeline
+    # Main RAG Pipeline (LangGraph)
     # --------------------------------------------------
 
     def invoke(
@@ -234,151 +287,73 @@ Content:
             )
         )
 
-        # Step 1: Domain Routing
+        self._log(
+            "\n[bold yellow]Executing LangGraph RAG workflow..."
+        )
 
-        routing_start = time.perf_counter()
+        # Initialize the graph state.
+        initial_state = {
+            "question": question,
+            "category": category,
+            "paper_id": paper_id,
+        }
 
-        if category is None:
+        # Execute the complete RAG workflow.
+        # result = self.graph.invoke(initial_state)
+                # Stream graph execution and display completed nodes.
+        for event in self.graph.stream(
+            initial_state,
+            stream_mode="updates",
+        ):
 
-            with console.status(
-                "[bold yellow]Step 1/4: Analyzing question and detecting domains...",
-                spinner="dots",
-            ):
-                routing_result = self.domain_router.route(question)
+            for node_name, node_output in event.items():
 
-            domains = routing_result.domains
-            routing_reasoning = routing_result.reasoning
+                console.print(
+                    f"\n[bold cyan]Completed Node:[/bold cyan] {node_name}"
+                )
 
-        else:
+            result = self.graph.get_state(
+                initial_state
+            ).values
+        total_time = time.perf_counter() - total_start
 
-            domains = (
-                [category]
-                if isinstance(category, str)
-                else category
+        # Extract the final results.
+        answer = result.get("answer", "")
+        domains = result.get("domains", [])
+        routing_reasoning = result.get("routing_reasoning", "")
+        sources = result.get("sources", [])
+        generation_time = result.get("generation_time", 0.0)
+
+        # Display the generated answer.
+        console.print(
+            Panel(
+                Markdown(answer),
+                title="Generated Answer",
+                border_style="green",
             )
-
-            routing_reasoning = "Domains were manually selected."
-
-        routing_time = (
-            time.perf_counter() - routing_start
         )
 
-        self._log(
-            f"\n[green]Routing completed in {routing_time:.2f}s"
-        )
+        # Display retrieved sources.
+        if sources and self.verbose:
+            self._display_sources(sources)
 
         self._log(
-            f"[cyan]Selected domains: {domains}"
+            f"\n[cyan]Selected domains: {domains}"
         )
 
         self._log(
             f"[dim]{routing_reasoning}"
         )
 
-        # Step 2: Domain Validation
-
-        if not domains:
-
-            self._log(
-                "[red]Question is outside supported research domains."
-            )
-
-            return {
-                "question": question,
-                "domains": [],
-                "routing_reasoning": routing_reasoning,
-                "answer": (
-                    "This question is outside the research domains "
-                    "supported by this assistant."
-                ),
-                "sources": [],
-            }
-
-        # Step 3: Retrieval
-
-        retrieval_start = time.perf_counter()
-
-        with console.status(
-            f"[bold yellow]Step 2/4: Searching Qdrant in {len(domains)} domain(s)...",
-            spinner="dots",
-        ):
-
-            documents = self.retriever.retrieve(
-                question=question,
-                top_k=self.top_k,
-                category=domains,
-                paper_id=paper_id,
-            )
-
-        retrieval_time = (
-            time.perf_counter() - retrieval_start
+        self._log(
+            f"\n[green]Generation time: {generation_time:.2f}s"
         )
 
         self._log(
-            f"\n[green]Retrieval completed in {retrieval_time:.2f}s"
+            f"[bold cyan]Total execution time: {total_time:.2f}s"
         )
 
-        self._log(
-            f"[cyan]Retrieved chunks: {len(documents)}"
-        )
-
-        if not documents:
-
-            self._log(
-                "[red]No relevant documents were retrieved."
-            )
-
-            return {
-                "question": question,
-                "domains": domains,
-                "routing_reasoning": routing_reasoning,
-                "answer": (
-                    "The available research papers do not provide "
-                    "sufficient evidence to answer this question."
-                ),
-                "sources": [],
-            }
-
-        # Step 4: Context Preparation
-
-        with console.status(
-            "[bold yellow]Step 3/4: Preparing context and citations...",
-            spinner="dots",
-        ):
-
-            context, sources = self._format_documents(documents)
-
-        self._log(
-            f"[green]Context prepared: {len(sources)} unique sources"
-        )
-
-        # Step 5: Streaming Generation
-
-        answer, generation_time = self._generate_streaming_answer(
-            context=context,
-            question=question,
-        )
-
-        self._log(
-            f"\n[green]Answer generated in {generation_time:.2f}s"
-        )
-
-        # Step 6: Display Results
-
-        total_time = (
-            time.perf_counter() - total_start
-        )
-
-        if self.verbose:
-
-            self._display_sources(sources)
-
-            self._log(
-                f"\n[bold cyan]Total execution time: {total_time:.2f}s"
-            )
-
-        # Return Results
-
+        # Return results using the previous interface.
         return {
             "question": question,
             "domains": domains,
@@ -386,11 +361,17 @@ Content:
             "answer": answer,
             "sources": sources,
             "execution_time": {
-                "routing": routing_time,
-                "retrieval": retrieval_time,
                 "generation": generation_time,
                 "total": total_time,
             },
+            "citation_valid": result.get(
+                "citation_valid",
+                True,
+            ),
+            "citation_errors": result.get(
+                "citation_errors",
+                [],
+            ),
         }
 
     # --------------------------------------------------
@@ -400,3 +381,4 @@ Content:
     def close(self):
 
         self.retriever.close()
+
