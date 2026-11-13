@@ -79,9 +79,7 @@ class Retriever:
                 conditions.append(
                     models.FieldCondition(
                         key="category",
-                        match=models.MatchValue(
-                            value=current_category
-                        ),
+                        match=models.MatchValue(value=current_category),
                     )
                 )
 
@@ -101,7 +99,7 @@ class Retriever:
 
             for point in results.points:
 
-                # Avoid duplicate points.
+                # Skip duplicate points.
                 if point.id in seen_ids:
                     continue
 
@@ -117,20 +115,21 @@ class Retriever:
 
                 metadata["retrieval_score"] = point.score
 
-                document = Document(
-                    page_content=payload.get("page_content", ""),
-                    metadata=metadata,
+                documents.append(
+                    Document(
+                        page_content=payload.get("page_content", ""),
+                        metadata=metadata,
+                    )
                 )
 
-                documents.append(document)
-
-        # Sort all retrieved documents by similarity.
+        # Sort all documents by similarity score.
         documents.sort(
             key=lambda doc: doc.metadata["retrieval_score"],
             reverse=True,
         )
 
-        return documents
+        # Keep only the globally top-k documents.
+        return documents[:top_k]
 
     def close(self):
         self.client.close()

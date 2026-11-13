@@ -12,6 +12,8 @@ class EmbeddingProvider(Embeddings):
         self.model = SentenceTransformer(
             model_name,
             device=device,
+            local_files_only=True,
+
         )
 
     def embed_documents(
